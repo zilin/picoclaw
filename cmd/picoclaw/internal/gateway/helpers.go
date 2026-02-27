@@ -27,10 +27,15 @@ import (
 	"github.com/sipeed/picoclaw/pkg/voice"
 )
 
-func gatewayCmd(debug bool) error {
+func gatewayCmd(debug bool, logFilter string) error {
 	if debug {
 		logger.SetLevel(logger.DEBUG)
 		fmt.Println("🔍 Debug mode enabled")
+	}
+
+	if logFilter != "" {
+		logger.SetComponentFilter(logFilter)
+		fmt.Printf("🔍 Log filter enabled: %s\n", logFilter)
 	}
 
 	cfg, err := internal.LoadConfig()
