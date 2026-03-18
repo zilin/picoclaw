@@ -392,6 +392,10 @@ func (cs *CronService) loadStore() error {
 		return err
 	}
 
+	if len(data) == 0 {
+		return nil
+	}
+
 	return json.Unmarshal(data, cs.store)
 }
 

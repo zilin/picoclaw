@@ -66,6 +66,7 @@ type processOptions struct {
 	EnableSummary     bool     // Whether to trigger summarization
 	SendResponse      bool     // Whether to send response via bus
 	NoHistory         bool     // If true, don't load session history (for heartbeat)
+	ThinkingOverride  ThinkingLevel
 }
 
 const (
@@ -510,27 +511,35 @@ func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.Inbou
 
 	// Transcribe each audio media ref in order.
 	var transcriptions []string
+	var remainingMedia []string
+
 	for _, ref := range msg.Media {
 		path, meta, err := al.mediaStore.ResolveWithMeta(ref)
 		if err != nil {
 			logger.WarnCF("voice", "Failed to resolve media ref", map[string]any{"ref": ref, "error": err})
+			remainingMedia = append(remainingMedia, ref)
 			continue
 		}
 		if !utils.IsAudioFile(meta.Filename, meta.ContentType) {
+			remainingMedia = append(remainingMedia, ref)
 			continue
 		}
 		result, err := al.transcriber.Transcribe(ctx, path)
 		if err != nil {
 			logger.WarnCF("voice", "Transcription failed", map[string]any{"ref": ref, "error": err})
 			transcriptions = append(transcriptions, "")
+			remainingMedia = append(remainingMedia, ref) // keep if failed to transcribe
 			continue
 		}
 		transcriptions = append(transcriptions, result.Text)
+		// Handled successfully! Do not add to remainingMedia!
 	}
 
 	if len(transcriptions) == 0 {
 		return msg, false
 	}
+
+	msg.Media = remainingMedia
 
 	al.sendTranscriptionFeedback(ctx, msg.Channel, msg.ChatID, msg.MessageID, transcriptions)
 
@@ -680,14 +689,15 @@ func (al *AgentLoop) ProcessHeartbeat(
 		return "", fmt.Errorf("no default agent for heartbeat")
 	}
 	return al.runAgentLoop(ctx, agent, processOptions{
-		SessionKey:      "heartbeat",
-		Channel:         channel,
-		ChatID:          chatID,
-		UserMessage:     content,
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
-		NoHistory:       true, // Don't load session history for heartbeat
+		SessionKey:       "heartbeat",
+		Channel:          channel,
+		ChatID:           chatID,
+		UserMessage:      content,
+		DefaultResponse:  defaultResponse,
+		EnableSummary:    false,
+		SendResponse:     false,
+		NoHistory:        true, // Don't load session history for heartbeat
+		ThinkingOverride: ThinkingOff,
 	})
 }
 
@@ -760,7 +770,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		Media:             msg.Media,
 		DefaultResponse:   defaultResponse,
 		EnableSummary:     true,
-		SendResponse:      false,
+		SendResponse:      true,
 	}
 
 	// context-dependent commands check their own Runtime fields and report
@@ -922,6 +932,7 @@ func (al *AgentLoop) runAgentLoop(
 	// This is controlled by the tool's Silent flag and ForUser content
 
 	// 4. Handle empty response
+	finalContent = strings.TrimSpace(finalContent)
 	if finalContent == "" {
 		finalContent = opts.DefaultResponse
 	}
@@ -954,6 +965,9 @@ func (al *AgentLoop) runAgentLoop(
 			"final_length": len(finalContent),
 		})
 
+	if opts.SendResponse {
+		return "", nil
+	}
 	return finalContent, nil
 }
 
@@ -967,49 +981,49 @@ func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string
 	return ""
 }
 
-func (al *AgentLoop) handleReasoning(
+func (al *AgentLoop) publishStatus(
 	ctx context.Context,
-	reasoningContent, channelName, channelID string,
+	response *providers.LLMResponse,
+	opts processOptions,
+	execInfo string,
 ) {
-	if reasoningContent == "" || channelName == "" || channelID == "" {
+	if !opts.SendResponse || constants.IsInternalChannel(opts.Channel) {
 		return
 	}
 
-	// Check context cancellation before attempting to publish,
-	// since PublishOutbound's select may race between send and ctx.Done().
-	if ctx.Err() != nil {
-		return
+	// Resolve reasoning channel
+	reasoningChatID := al.targetReasoningChannelID(opts.Channel)
+	if reasoningChatID == "" {
+		reasoningChatID = opts.ChatID
 	}
 
-	// Use a short timeout so the goroutine does not block indefinitely when
-	// the outbound bus is full.  Reasoning output is best-effort; dropping it
-	// is acceptable to avoid goroutine accumulation.
-	pubCtx, pubCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer pubCancel()
+	// Resolve reasoning content
+	reasoning := response.Reasoning
+	if reasoning == "" {
+		reasoning = response.ReasoningContent
+	}
 
-	if err := al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
-		Channel: channelName,
-		ChatID:  channelID,
-		Content: reasoningContent,
-	}); err != nil {
-		// Treat context.DeadlineExceeded / context.Canceled as expected
-		// (bus full under load, or parent canceled).  Check the error
-		// itself rather than ctx.Err(), because pubCtx may time out
-		// (5 s) while the parent ctx is still active.
-		// Also treat ErrBusClosed as expected — it occurs during normal
-		// shutdown when the bus is closed before all goroutines finish.
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
-			errors.Is(err, bus.ErrBusClosed) {
-			logger.DebugCF("agent", "Reasoning publish skipped (timeout/cancel)", map[string]any{
-				"channel": channelName,
-				"error":   err.Error(),
-			})
+	content := "Thinking..."
+	if reasoning != "" {
+		content += "\n" + reasoning
+	}
+
+	if execInfo != "" {
+		if reasoning != "" {
+			content += "\n\n" + execInfo
 		} else {
-			logger.WarnCF("agent", "Failed to publish reasoning (best-effort)", map[string]any{
-				"channel": channelName,
-				"error":   err.Error(),
-			})
+			content += " " + execInfo
 		}
+	}
+
+	// Only publish if there is actual content beyond the prefix
+	if reasoning != "" || execInfo != "" {
+		_ = al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+			Channel: opts.Channel,
+			ChatID:  reasoningChatID,
+			Content: utils.Truncate(content, 3500),
+			Type:    "status",
+		})
 	}
 }
 
@@ -1027,7 +1041,7 @@ func (al *AgentLoop) runLLMIteration(
 	// selectCandidates evaluates routing once and the decision is sticky for
 	// all tool-follow-up iterations within the same turn so that a multi-step
 	// tool chain doesn't switch models mid-way through.
-	activeCandidates, activeModel := al.selectCandidates(agent, opts.UserMessage, messages)
+	activeCandidates, activeModel := al.selectCandidates(agent, opts.UserMessage, messages, opts.Media)
 
 	for iteration < agent.MaxIterations {
 		iteration++
@@ -1091,12 +1105,17 @@ func (al *AgentLoop) runLLMIteration(
 		}
 		// parseThinkingLevel guarantees ThinkingOff for empty/unknown values,
 		// so checking != ThinkingOff is sufficient.
-		if agent.ThinkingLevel != ThinkingOff {
+		effectiveThinkingLevel := agent.ThinkingLevel
+		if opts.ThinkingOverride != "" {
+			effectiveThinkingLevel = opts.ThinkingOverride
+		}
+
+		if effectiveThinkingLevel != ThinkingOff {
 			if tc, ok := agent.Provider.(providers.ThinkingCapable); ok && tc.SupportsThinking() {
-				llmOpts["thinking_level"] = string(agent.ThinkingLevel)
+				llmOpts["thinking_level"] = string(effectiveThinkingLevel)
 			} else {
 				logger.WarnCF("agent", "thinking_level is set but current provider does not support it, ignoring",
-					map[string]any{"agent_id": agent.ID, "thinking_level": string(agent.ThinkingLevel)})
+					map[string]any{"agent_id": agent.ID, "thinking_level": string(effectiveThinkingLevel)})
 			}
 		}
 
@@ -1104,11 +1123,28 @@ func (al *AgentLoop) runLLMIteration(
 			al.activeRequests.Add(1)
 			defer al.activeRequests.Done()
 
+			// Setup streaming progress handler if supported
+			var onProgress func(partial *providers.LLMResponse)
+			if !constants.IsInternalChannel(opts.Channel) {
+				var lastPublish time.Time
+				onProgress = func(partial *providers.LLMResponse) {
+					// Throttle status updates to once per second to avoid rate limits
+					if time.Since(lastPublish) < 1000*time.Millisecond {
+						return
+					}
+					lastPublish = time.Now()
+					al.publishStatus(ctx, partial, opts, "")
+				}
+			}
+
 			if len(activeCandidates) > 1 && al.fallback != nil {
 				fbResult, fbErr := al.fallback.Execute(
 					ctx,
 					activeCandidates,
 					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
+						if sp, ok := agent.Provider.(providers.LLMStreamProvider); ok {
+							return sp.ChatStream(ctx, messages, providerToolDefs, model, llmOpts, onProgress)
+						}
 						return agent.Provider.Chat(ctx, messages, providerToolDefs, model, llmOpts)
 					},
 				)
@@ -1124,6 +1160,10 @@ func (al *AgentLoop) runLLMIteration(
 					)
 				}
 				return fbResult.Response, nil
+			}
+
+			if sp, ok := agent.Provider.(providers.LLMStreamProvider); ok {
+				return sp.ChatStream(ctx, messages, providerToolDefs, activeModel, llmOpts, onProgress)
 			}
 			return agent.Provider.Chat(ctx, messages, providerToolDefs, activeModel, llmOpts)
 		}
@@ -1208,13 +1248,7 @@ func (al *AgentLoop) runLLMIteration(
 			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
 		}
 
-		go al.handleReasoning(
-			ctx,
-			response.Reasoning,
-			opts.Channel,
-			al.targetReasoningChannelID(opts.Channel),
-		)
-
+		// Log LLM response details
 		logger.DebugCF("agent", "LLM response",
 			map[string]any{
 				"agent_id":       agent.ID,
@@ -1225,6 +1259,15 @@ func (al *AgentLoop) runLLMIteration(
 				"target_channel": al.targetReasoningChannelID(opts.Channel),
 				"channel":        opts.Channel,
 			})
+
+		// 1. Send initial status update (Reasoning) immediately
+		al.publishStatus(ctx, response, opts, "")
+		if response.Reasoning != "" || response.ReasoningContent != "" {
+			// If we just sent reasoning, give the user a moment to see it
+			// before it potentially gets replaced by a final direct answer.
+			time.Sleep(1 * time.Second)
+		}
+
 		// Check if no tool calls - then check reasoning content if any
 		if len(response.ToolCalls) == 0 {
 			finalContent = response.Content
@@ -1316,21 +1359,46 @@ func (al *AgentLoop) runLLMIteration(
 						"iteration": iteration,
 					})
 
+				// Send immediate status update right before execution
+				if opts.SendResponse && !constants.IsInternalChannel(opts.Channel) {
+					// Stagger updates to avoid race conditions in Google Chat
+					time.Sleep(time.Duration(idx) * 500 * time.Millisecond)
+
+					statusArgs := utils.Truncate(string(argsJSON), 100)
+					execInfo := fmt.Sprintf("🔨 Executing: %s(%s)", tc.Name, statusArgs)
+					al.publishStatus(ctx, response, opts, execInfo)
+				}
+
 				// Create async callback for tools that implement AsyncExecutor.
 				// When the background work completes, this publishes the result
 				// as an inbound system message so processSystemMessage routes it
 				// back to the user via the normal agent loop.
 				asyncCallback := func(_ context.Context, result *tools.ToolResult) {
-					// Send ForUser content directly to the user (immediate feedback),
-					// mirroring the synchronous tool execution path.
+					// Send ForUser content to the user (immediate feedback).
+					// For external channels, we ONLY send this to the reasoning channel
+					// to keep the main thread clean.
 					if !result.Silent && result.ForUser != "" {
-						outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer outCancel()
-						_ = al.bus.PublishOutbound(outCtx, bus.OutboundMessage{
-							Channel: opts.Channel,
-							ChatID:  opts.ChatID,
-							Content: result.ForUser,
-						})
+						if !constants.IsInternalChannel(opts.Channel) {
+							if rID := al.targetReasoningChannelID(opts.Channel); rID != "" {
+								outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
+								defer outCancel()
+								_ = al.bus.PublishOutbound(outCtx, bus.OutboundMessage{
+									Channel: opts.Channel,
+									ChatID:  rID,
+									Content: result.ForUser,
+									Type:    "status",
+								})
+							}
+						} else {
+							// Internal channels (CLI) get the result directly
+							outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer outCancel()
+							_ = al.bus.PublishOutbound(outCtx, bus.OutboundMessage{
+								Channel: opts.Channel,
+								ChatID:  opts.ChatID,
+								Content: result.ForUser,
+							})
+						}
 					}
 
 					// Determine content for the agent loop (ForLLM or error).
@@ -1374,14 +1442,28 @@ func (al *AgentLoop) runLLMIteration(
 
 		// Process results in original order (send to user, save to session)
 		for _, r := range agentResults {
-			// Send ForUser content to user immediately if not Silent
+			// Send ForUser content to user immediately if not Silent.
+			// For external channels, we ONLY send this to the reasoning channel.
 			if !r.result.Silent && r.result.ForUser != "" && opts.SendResponse {
-				al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-					Channel: opts.Channel,
-					ChatID:  opts.ChatID,
-					Content: r.result.ForUser,
-				})
-				logger.DebugCF("agent", "Sent tool result to user",
+				if !constants.IsInternalChannel(opts.Channel) {
+					if rID := al.targetReasoningChannelID(opts.Channel); rID != "" {
+						al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+							Channel: opts.Channel,
+							ChatID:  rID,
+							Content: r.result.ForUser,
+							Type:    "status",
+						})
+					}
+				} else {
+					// Internal channels (CLI) get the result directly
+					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+						Channel: opts.Channel,
+						ChatID:  opts.ChatID,
+						Content: r.result.ForUser,
+					})
+				}
+
+				logger.DebugCF("agent", "Sent tool result to user (status/direct)",
 					map[string]any{
 						"tool":        r.tc.Name,
 						"content_len": len(r.result.ForUser),
@@ -1438,6 +1520,12 @@ func (al *AgentLoop) runLLMIteration(
 		})
 	}
 
+	if iteration >= agent.MaxIterations {
+		logger.WarnCF("agent", "Max tool iterations reached",
+			map[string]any{"agent_id": agent.ID, "max": agent.MaxIterations})
+		return defaultResponse, iteration, nil
+	}
+
 	return finalContent, iteration, nil
 }
 
@@ -1453,12 +1541,18 @@ func (al *AgentLoop) selectCandidates(
 	agent *AgentInstance,
 	userMsg string,
 	history []providers.Message,
+	media []string,
 ) (candidates []providers.FallbackCandidate, model string) {
 	if agent.Router == nil || len(agent.LightCandidates) == 0 {
-		return agent.Candidates, agent.Model
+		candidates = agent.Candidates
+		model = agent.Model
+		if len(candidates) > 0 {
+			model = candidates[0].Model
+		}
+		return candidates, model
 	}
 
-	_, usedLight, score := agent.Router.SelectModel(userMsg, history, agent.Model)
+	_, usedLight, score := agent.Router.SelectModel(userMsg, history, media, agent.Model)
 	if !usedLight {
 		logger.DebugCF("agent", "Model routing: primary model selected",
 			map[string]any{
@@ -1466,7 +1560,12 @@ func (al *AgentLoop) selectCandidates(
 				"score":     score,
 				"threshold": agent.Router.Threshold(),
 			})
-		return agent.Candidates, agent.Model
+		candidates = agent.Candidates
+		model = agent.Model
+		if len(candidates) > 0 {
+			model = candidates[0].Model
+		}
+		return candidates, model
 	}
 
 	logger.InfoCF("agent", "Model routing: light model selected",
@@ -1476,7 +1575,13 @@ func (al *AgentLoop) selectCandidates(
 			"score":       score,
 			"threshold":   agent.Router.Threshold(),
 		})
-	return agent.LightCandidates, agent.Router.LightModel()
+
+	candidates = agent.LightCandidates
+	model = agent.Router.LightModel()
+	if len(candidates) > 0 {
+		model = candidates[0].Model
+	}
+	return candidates, model
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.

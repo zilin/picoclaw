@@ -16,6 +16,7 @@ import (
 	_ "github.com/sipeed/picoclaw/pkg/channels/dingtalk"
 	_ "github.com/sipeed/picoclaw/pkg/channels/discord"
 	_ "github.com/sipeed/picoclaw/pkg/channels/feishu"
+	_ "github.com/sipeed/picoclaw/pkg/channels/googlechat"
 	_ "github.com/sipeed/picoclaw/pkg/channels/irc"
 	_ "github.com/sipeed/picoclaw/pkg/channels/line"
 	_ "github.com/sipeed/picoclaw/pkg/channels/maixcam"
@@ -86,13 +87,28 @@ func Run(debug bool, configPath string, allowEmptyStartup bool) error {
 		return fmt.Errorf("error loading config: %w", err)
 	}
 
+	if cfg.Agents.Defaults.MediaDir != "" {
+		resolvedPath := cfg.Agents.Defaults.MediaDir
+		if !filepath.IsAbs(resolvedPath) {
+			resolvedPath = filepath.Join(cfg.WorkspacePath(), resolvedPath)
+		}
+		media.SetTempDir(resolvedPath)
+	}
+
+	originalModelName := cfg.Agents.Defaults.GetModelName()
 	provider, modelID, err := createStartupProvider(cfg, allowEmptyStartup)
 	if err != nil {
 		return fmt.Errorf("error creating provider: %w", err)
 	}
 
 	if modelID != "" {
+		// Only update if it was actually resolved to something new
+		// but keep the original model name available for the agent loop
 		cfg.Agents.Defaults.ModelName = modelID
+	}
+	// Restore the original name if we want the agent to find the config alias
+	if originalModelName != "" {
+		cfg.Agents.Defaults.ModelName = originalModelName
 	}
 
 	msgBus := bus.NewMessageBus()
@@ -586,7 +602,7 @@ func createHeartbeatHandler(agentLoop *agent.AgentLoop) func(prompt, channel, ch
 		if err != nil {
 			return tools.ErrorResult(fmt.Sprintf("Heartbeat error: %v", err))
 		}
-		if response == "HEARTBEAT_OK" {
+		if response == "HEARTBEAT_OK" || response == "" {
 			return tools.SilentResult("Heartbeat OK")
 		}
 		return tools.SilentResult(response)

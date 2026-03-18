@@ -3,6 +3,7 @@ package skills
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/utils"
@@ -218,7 +220,12 @@ func (si *SkillInstaller) downloadRaw(ctx context.Context, owner, repo, ref, sub
 		return fmt.Errorf("failed to write skill file: %w", err)
 	}
 
-	return os.Chmod(localPath, 0o600)
+	if err := os.Chmod(localPath, 0o600); err != nil {
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.ENOTSUP) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (si *SkillInstaller) downloadFile(ctx context.Context, url, localPath string) error {
@@ -243,7 +250,12 @@ func (si *SkillInstaller) downloadFile(ctx context.Context, url, localPath strin
 		return fmt.Errorf("failed to move downloaded file: %w", err)
 	}
 
-	return os.Chmod(localPath, 0o600)
+	if err := os.Chmod(localPath, 0o600); err != nil {
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.ENOTSUP) {
+			return err
+		}
+	}
+	return nil
 }
 
 // shouldDownload determines if a file should be downloaded

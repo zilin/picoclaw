@@ -8,9 +8,11 @@
 package fileutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -89,9 +91,13 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("failed to sync temp file: %w", err)
 	}
 
-	// Set file permissions before closing
+	// Set file permissions before closing.
+	// NOTE: We ignore EPERM/ENOTSUP errors because some environments (like Cloud Run with network mounts)
+	// do not allow changing permissions, and OpenFile already sets them where possible.
 	if err := tmpFile.Chmod(perm); err != nil {
-		return fmt.Errorf("failed to set permissions: %w", err)
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.ENOTSUP) {
+			return fmt.Errorf("failed to set permissions: %w", err)
+		}
 	}
 
 	// Close file before rename (required on Windows)

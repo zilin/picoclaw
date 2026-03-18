@@ -32,6 +32,18 @@ type LLMProvider interface {
 	GetDefaultModel() string
 }
 
+type LLMStreamProvider interface {
+	LLMProvider
+	ChatStream(
+		ctx context.Context,
+		messages []Message,
+		tools []ToolDefinition,
+		model string,
+		options map[string]any,
+		onProgress func(partial *LLMResponse),
+	) (*LLMResponse, error)
+}
+
 type StatefulProvider interface {
 	LLMProvider
 	Close()

@@ -123,20 +123,46 @@ func NewAgentInstance(
 		maxIter = 20
 	}
 
+	// Resolve model-specific settings from config
 	maxTokens := defaults.MaxTokens
+	var temperaturePtr *float64 = defaults.Temperature
+	var thinkingLevelStr string
+
+	if cfg != nil {
+		var mc *config.ModelConfig
+		// 1. Try resolving via model alias/name
+		if m, err := cfg.GetModelConfig(model); err == nil && m != nil {
+			mc = m
+		} else {
+			// 2. Fallback: search model_list for an exact match on the model identifier or model name
+			for i := range cfg.ModelList {
+				if cfg.ModelList[i].Model == model || cfg.ModelList[i].ModelName == model {
+					mc = &cfg.ModelList[i]
+					break
+				}
+			}
+		}
+
+		if mc != nil {
+			if mc.MaxTokens > 0 {
+				maxTokens = mc.MaxTokens
+			}
+			if mc.Temperature != nil {
+				temperaturePtr = mc.Temperature
+			}
+			thinkingLevelStr = mc.ThinkingLevel
+		}
+	}
+
 	if maxTokens == 0 {
 		maxTokens = 8192
 	}
 
 	temperature := 0.7
-	if defaults.Temperature != nil {
-		temperature = *defaults.Temperature
+	if temperaturePtr != nil {
+		temperature = *temperaturePtr
 	}
 
-	var thinkingLevelStr string
-	if mc, err := cfg.GetModelConfig(model); err == nil {
-		thinkingLevelStr = mc.ThinkingLevel
-	}
 	thinkingLevel := parseThinkingLevel(thinkingLevelStr)
 
 	summarizeMessageThreshold := defaults.SummarizeMessageThreshold

@@ -33,20 +33,21 @@ type Features struct {
 	ConversationDepth int
 
 	// HasAttachments is true when the message appears to contain media (images,
-	// audio, video). Multi-modal inputs require vision-capable heavy models.
+	// audio, video) in its text or explicit media references.
+	// Multi-modal inputs require vision-capable heavy models.
 	HasAttachments bool
 }
 
 // ExtractFeatures computes the structural feature vector for a message.
 // It is a pure function with no side effects and zero allocations beyond
 // the returned struct.
-func ExtractFeatures(msg string, history []providers.Message) Features {
+func ExtractFeatures(msg string, history []providers.Message, media []string) Features {
 	return Features{
 		TokenEstimate:     estimateTokens(msg),
 		CodeBlockCount:    countCodeBlocks(msg),
 		RecentToolCalls:   countRecentToolCalls(history),
 		ConversationDepth: len(history),
-		HasAttachments:    hasAttachments(msg),
+		HasAttachments:    hasAttachments(msg) || len(media) > 0,
 	}
 }
 

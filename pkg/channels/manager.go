@@ -307,6 +307,10 @@ func (m *Manager) initChannels() error {
 		m.initChannel("irc", "IRC")
 	}
 
+	if m.config.Channels.GoogleChat.Enabled && m.config.Channels.GoogleChat.SubscriptionID != "" {
+		m.initChannel("googlechat", "Google Chat")
+	}
+
 	logger.InfoCF("channels", "Channel initialization completed", map[string]any{
 		"enabled_channels": len(m.channels),
 	})

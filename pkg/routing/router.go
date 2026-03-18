@@ -61,9 +61,10 @@ func newWithClassifier(cfg RouterConfig, c Classifier) *Router {
 func (r *Router) SelectModel(
 	msg string,
 	history []providers.Message,
+	media []string,
 	primaryModel string,
 ) (model string, usedLight bool, score float64) {
-	features := ExtractFeatures(msg, history)
+	features := ExtractFeatures(msg, history, media)
 	score = r.classifier.Score(features)
 	if score < r.cfg.Threshold {
 		return r.cfg.LightModel, true, score

@@ -12,6 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	anthropicmessages "github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
 	"github.com/sipeed/picoclaw/pkg/providers/azure"
+	"github.com/sipeed/picoclaw/pkg/providers/gemini_genai"
 )
 
 // createClaudeAuthProvider creates a Claude provider using OAuth credentials from auth store.
@@ -200,6 +201,30 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 			connectMode = "grpc"
 		}
 		provider, err := NewGitHubCopilotProvider(apiBase, connectMode, modelID)
+		if err != nil {
+			return nil, "", err
+		}
+		return provider, modelID, nil
+
+	case "gemini-genai":
+		if cfg.APIKey == "" {
+			return nil, "", fmt.Errorf("api_key is required for gemini-genai protocol")
+		}
+		provider, err := gemini_genai.NewGeminiGenAIProvider(cfg.APIKey)
+		if err != nil {
+			return nil, "", err
+		}
+		return provider, modelID, nil
+
+	case "gemini-vertex":
+		if cfg.APIBase == "" {
+			return nil, "", fmt.Errorf("api_base is required for gemini-vertex protocol (format: project_id:location)")
+		}
+		parts := strings.Split(cfg.APIBase, ":")
+		if len(parts) != 2 {
+			return nil, "", fmt.Errorf("invalid api_base for gemini-vertex, expected project_id:location")
+		}
+		provider, err := gemini_genai.NewGeminiVertexProvider(parts[0], parts[1])
 		if err != nil {
 			return nil, "", err
 		}

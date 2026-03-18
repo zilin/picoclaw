@@ -76,6 +76,35 @@ func (f *FlexibleStringSlice) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// FlexibleBool is a bool that also accepts JSON strings ("true", "false", etc.),
+// which is useful when environment variables are substituted into JSON templates.
+type FlexibleBool bool
+
+func (f *FlexibleBool) UnmarshalJSON(data []byte) error {
+	// Try bool first
+	var b bool
+	if err := json.Unmarshal(data, &b); err == nil {
+		*f = FlexibleBool(b)
+		return nil
+	}
+
+	// Try string
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		switch strings.ToLower(s) {
+		case "true", "yes", "1", "on":
+			*f = true
+		case "false", "no", "0", "off", "":
+			*f = false
+		default:
+			return fmt.Errorf("invalid boolean string: %q", s)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("invalid boolean type: %s", string(data))
+}
+
 type Config struct {
 	Agents    AgentsConfig    `json:"agents"`
 	Bindings  []AgentBinding  `json:"bindings,omitempty"`
@@ -236,6 +265,7 @@ type AgentDefaults struct {
 	SummarizeTokenPercent     int            `json:"summarize_token_percent"         env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"`
 	MaxMediaSize              int            `json:"max_media_size,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_MEDIA_SIZE"`
 	Routing                   *RoutingConfig `json:"routing,omitempty"`
+	MediaDir                  string         `json:"media_dir,omitempty"             env:"PICOCLAW_AGENTS_DEFAULTS_MEDIA_DIR"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB
@@ -273,6 +303,7 @@ type ChannelsConfig struct {
 	WeComAIBot WeComAIBotConfig `json:"wecom_aibot"`
 	Pico       PicoConfig       `json:"pico"`
 	IRC        IRCConfig        `json:"irc"`
+	GoogleChat GoogleChatConfig `json:"googlechat"`
 }
 
 // GroupTriggerConfig controls when the bot responds in group chats.
@@ -494,6 +525,15 @@ type IRCConfig struct {
 	ReasoningChannelID string              `json:"reasoning_channel_id"    env:"PICOCLAW_CHANNELS_IRC_REASONING_CHANNEL_ID"`
 }
 
+type GoogleChatConfig struct {
+	Enabled            bool                `json:"enabled"              env:"PICOCLAW_CHANNELS_GOOGLECHAT_ENABLED"`
+	SubscriptionID     string              `json:"subscription_id"     env:"PICOCLAW_CHANNELS_GOOGLECHAT_SUBSCRIPTION_ID"`
+	ProjectID          string              `json:"project_id"          env:"PICOCLAW_CHANNELS_GOOGLECHAT_PROJECT_ID"`
+	AllowFrom          FlexibleStringSlice `json:"allow_from"           env:"PICOCLAW_CHANNELS_GOOGLECHAT_ALLOW_FROM"`
+	ReasoningChannelID string              `json:"reasoning_channel_id" env:"PICOCLAW_CHANNELS_GOOGLECHAT_REASONING_CHANNEL_ID"`
+	DownloadAttachments bool                `json:"download_attachments" env:"PICOCLAW_CHANNELS_GOOGLECHAT_DOWNLOAD_ATTACHMENTS"`
+}
+
 type HeartbeatConfig struct {
 	Enabled  bool `json:"enabled"  env:"PICOCLAW_HEARTBEAT_ENABLED"`
 	Interval int  `json:"interval" env:"PICOCLAW_HEARTBEAT_INTERVAL"` // minutes, min 5
@@ -505,7 +545,14 @@ type DevicesConfig struct {
 }
 
 type VoiceConfig struct {
-	EchoTranscription bool `json:"echo_transcription" env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+	EchoTranscription FlexibleBool  `json:"echo_transcription" env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+	Transcriber       string        `json:"transcriber"        env:"PICOCLAW_VOICE_TRANSCRIBER"` // "groq" or "whisper"
+	Whisper           WhisperConfig `json:"whisper"`
+}
+
+type WhisperConfig struct {
+	ModelPath string `json:"model_path" env:"PICOCLAW_VOICE_WHISPER_MODEL_PATH"` // e.g., "~/.cache/whisper/ggml-base.en.bin"
+	CliPath   string `json:"cli_path" env:"PICOCLAW_VOICE_WHISPER_CLI_PATH"`     // e.g., "/usr/local/bin/whisper-cli"
 }
 
 type ProvidersConfig struct {
@@ -615,10 +662,12 @@ type ModelConfig struct {
 	Workspace   string `json:"workspace,omitempty"`    // Workspace path for CLI-based providers
 
 	// Optional optimizations
-	RPM            int    `json:"rpm,omitempty"`              // Requests per minute limit
-	MaxTokensField string `json:"max_tokens_field,omitempty"` // Field name for max tokens (e.g., "max_completion_tokens")
-	RequestTimeout int    `json:"request_timeout,omitempty"`
-	ThinkingLevel  string `json:"thinking_level,omitempty"` // Extended thinking: off|low|medium|high|xhigh|adaptive
+	RPM            int      `json:"rpm,omitempty"`              // Requests per minute limit
+	MaxTokensField string   `json:"max_tokens_field,omitempty"` // Field name for max tokens (e.g., "max_completion_tokens")
+	MaxTokens      int      `json:"max_tokens,omitempty"`       // Max tokens for the model response
+	Temperature    *float64 `json:"temperature,omitempty"`      // Randomness for the model response
+	RequestTimeout int      `json:"request_timeout,omitempty"`
+	ThinkingLevel  string   `json:"thinking_level,omitempty"` // Extended thinking: off|low|medium|high|xhigh|adaptive
 }
 
 // Validate checks if the ModelConfig has all required fields.

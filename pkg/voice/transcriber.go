@@ -166,15 +166,32 @@ func (t *GroqTranscriber) Name() string {
 // DetectTranscriber inspects cfg and returns the appropriate Transcriber, or
 // nil if no supported transcription provider is configured.
 func DetectTranscriber(cfg *config.Config) Transcriber {
-	// Direct Groq provider config takes priority.
-	if key := cfg.Providers.Groq.APIKey; key != "" {
-		return NewGroqTranscriber(key)
-	}
-	// Fall back to any model-list entry that uses the groq/ protocol.
-	for _, mc := range cfg.ModelList {
-		if strings.HasPrefix(mc.Model, "groq/") && mc.APIKey != "" {
-			return NewGroqTranscriber(mc.APIKey)
+	if cfg.Voice.Transcriber == "whisper" {
+		tr, err := NewWhisperTranscriber(cfg.Voice.Whisper)
+		if err != nil {
+			logger.ErrorCF("voice", "Failed to create Whisper transcriber", map[string]any{"error": err.Error()})
+		} else {
+			return tr
 		}
 	}
+
+	if cfg.Voice.Transcriber == "groq" {
+		if key := cfg.Providers.Groq.APIKey; key != "" {
+			return NewGroqTranscriber(key)
+		}
+	}
+
+	// Fallback to legacy detection if not explicitly set to something else
+	if cfg.Voice.Transcriber == "" {
+		if key := cfg.Providers.Groq.APIKey; key != "" {
+			return NewGroqTranscriber(key)
+		}
+		for _, mc := range cfg.ModelList {
+			if strings.HasPrefix(mc.Model, "groq/") && mc.APIKey != "" {
+				return NewGroqTranscriber(mc.APIKey)
+			}
+		}
+	}
+
 	return nil
 }

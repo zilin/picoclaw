@@ -132,6 +132,46 @@ func SerializeMessages(messages []Message) []any {
 	return out
 }
 
+// --- Message normalization ---
+
+// MergeConsecutiveRoles merges consecutive messages with the same role into a single turn.
+// It concatenates text content with double newlines and appends media and tool calls.
+func MergeConsecutiveRoles(messages []Message) []Message {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	out := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		if len(out) > 0 && out[len(out)-1].Role == m.Role {
+			last := &out[len(out)-1]
+			if m.Content != "" {
+				if last.Content != "" {
+					last.Content += "\n\n" + m.Content
+				} else {
+					last.Content = m.Content
+				}
+			}
+			last.Media = append(last.Media, m.Media...)
+			last.ToolCalls = append(last.ToolCalls, m.ToolCalls...)
+		} else {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// EnsureUserStart removes leading messages until a "user" role is encountered.
+// Returns nil if no user message is found.
+func EnsureUserStart(messages []Message) []Message {
+	for i, m := range messages {
+		if m.Role == "user" {
+			return messages[i:]
+		}
+	}
+	return nil
+}
+
 // --- Response parsing ---
 
 // ParseResponse parses a JSON chat completion response body into an LLMResponse.

@@ -77,6 +77,17 @@ func (p *Provider) Chat(
 	model string,
 	options map[string]any,
 ) (*LLMResponse, error) {
+	return p.ChatStream(ctx, messages, tools, model, options, nil)
+}
+
+func (p *Provider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	onProgress func(partial *LLMResponse),
+) (*LLMResponse, error) {
 	var opts []option.RequestOption
 	if p.tokenSource != nil {
 		tok, err := p.tokenSource()
@@ -94,23 +105,15 @@ func (p *Provider) Chat(
 		return nil, err
 	}
 
-	// OAuth/setup-tokens require streaming; API keys use non-streaming.
-	if p.tokenSource != nil {
-		return p.chatStreaming(ctx, params, opts)
-	}
-
-	resp, err := p.client.Messages.New(ctx, params, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("claude API call: %w", err)
-	}
-
-	return parseResponse(resp), nil
+	// For Anthropic, we always use streaming to support real-time reasoning feedback
+	return p.chatStreaming(ctx, params, opts, onProgress)
 }
 
 func (p *Provider) chatStreaming(
 	ctx context.Context,
 	params anthropic.MessageNewParams,
 	opts []option.RequestOption,
+	onProgress func(partial *LLMResponse),
 ) (*LLMResponse, error) {
 	stream := p.client.Messages.NewStreaming(ctx, params, opts...)
 	defer stream.Close()
@@ -120,6 +123,9 @@ func (p *Provider) chatStreaming(
 		event := stream.Current()
 		if err := msg.Accumulate(event); err != nil {
 			return nil, fmt.Errorf("claude streaming accumulate: %w", err)
+		}
+		if onProgress != nil {
+			onProgress(parseResponse(&msg))
 		}
 	}
 	if err := stream.Err(); err != nil {

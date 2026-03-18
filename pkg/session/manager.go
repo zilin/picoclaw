@@ -2,10 +2,12 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -217,8 +219,10 @@ func (sm *SessionManager) Save(key string) error {
 		return err
 	}
 	if err := tmpFile.Chmod(0o600); err != nil {
-		_ = tmpFile.Close()
-		return err
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.ENOTSUP) {
+			_ = tmpFile.Close()
+			return err
+		}
 	}
 	if err := tmpFile.Sync(); err != nil {
 		_ = tmpFile.Close()
