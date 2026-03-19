@@ -175,6 +175,15 @@ func DetectTranscriber(cfg *config.Config) Transcriber {
 		}
 	}
 
+	if cfg.Voice.Transcriber == "google_cloud_speech" {
+		tr, err := NewGoogleCloudSpeechTranscriber(cfg.Voice.GoogleCloudSpeech)
+		if err != nil {
+			logger.ErrorCF("voice", "Failed to create Google Cloud Speech transcriber", map[string]any{"error": err.Error()})
+		} else {
+			return tr
+		}
+	}
+
 	if cfg.Voice.Transcriber == "groq" {
 		if key := cfg.Providers.Groq.APIKey; key != "" {
 			return NewGroqTranscriber(key)

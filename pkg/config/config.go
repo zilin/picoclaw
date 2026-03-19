@@ -545,14 +545,22 @@ type DevicesConfig struct {
 }
 
 type VoiceConfig struct {
-	EchoTranscription FlexibleBool  `json:"echo_transcription" env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
-	Transcriber       string        `json:"transcriber"        env:"PICOCLAW_VOICE_TRANSCRIBER"` // "groq" or "whisper"
-	Whisper           WhisperConfig `json:"whisper"`
+	EchoTranscription FlexibleBool           `json:"echo_transcription" env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+	Transcriber       string                 `json:"transcriber"        env:"PICOCLAW_VOICE_TRANSCRIBER"` // "groq" or "whisper" or "google_cloud_speech"
+	Whisper           WhisperConfig          `json:"whisper"`
+	GoogleCloudSpeech GoogleCloudSpeechConfig `json:"google_cloud_speech"`
 }
 
 type WhisperConfig struct {
 	ModelPath string `json:"model_path" env:"PICOCLAW_VOICE_WHISPER_MODEL_PATH"` // e.g., "~/.cache/whisper/ggml-base.en.bin"
 	CliPath   string `json:"cli_path" env:"PICOCLAW_VOICE_WHISPER_CLI_PATH"`     // e.g., "/usr/local/bin/whisper-cli"
+}
+
+type GoogleCloudSpeechConfig struct {
+	Enabled      bool   `json:"enabled"        env:"PICOCLAW_VOICE_GCSPEECH_ENABLED"`
+	ProjectID    string `json:"project_id"     env:"PICOCLAW_VOICE_GCSPEECH_PROJECT_ID"`
+	LanguageCode string `json:"language_code" env:"PICOCLAW_VOICE_GCSPEECH_LANGUAGE_CODE"`
+	Model        string `json:"model"         env:"PICOCLAW_VOICE_GCSPEECH_MODEL"` // e.g., "default", "command_and_search"
 }
 
 type ProvidersConfig struct {
